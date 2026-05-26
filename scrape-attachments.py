@@ -249,6 +249,31 @@ def iter_message_ids(M: imaplib.IMAP4_SSL) -> list[bytes]:
     return data[0].split()
 
 
+# BODYSTRUCTURE is a tiny structural description of the MIME tree. Plain
+# text/HTML-only mail has none of these tokens; anything with an attachment
+# or named inline part has at least one. False positives only cost an
+# unnecessary body fetch — false negatives would lose attachments, so this
+# regex stays deliberately permissive.
+_ATTACHMENT_HINTS = re.compile(rb'"(?:attachment|name|filename)"', re.IGNORECASE)
+
+
+def has_attachment_hint(body_structure: bytes) -> bool:
+    return bool(_ATTACHMENT_HINTS.search(body_structure))
+
+
+def fetch_or_reconnect(M, provider, mailbox, msg_id, what):
+    """Wrap M.fetch with a single reconnect attempt on IMAP4.abort."""
+    try:
+        typ, data = M.fetch(msg_id, what)
+        return M, typ, data
+    except imaplib.IMAP4.abort:
+        print("IMAP aborted, reconnecting ...")
+        M = connect(provider)
+        M.select(mailbox, readonly=True)
+        typ, data = M.fetch(msg_id, what)
+        return M, typ, data
+
+
 def extract_attachments(msg: Message):
     """Yield (filename, payload_bytes) for each attachment part."""
     for part in msg.walk():
@@ -332,16 +357,23 @@ def main() -> int:
 
         saved = 0
         skipped = 0
+        no_attach = 0
         for i, msg_id in enumerate(ids, start=1):
             if msg_id.decode() in seen_msg_ids:
                 continue
-            try:
-                typ, data = M.fetch(msg_id, "(RFC822)")
-            except imaplib.IMAP4.abort:
-                print("IMAP aborted, reconnecting ...")
-                M = connect(provider)
-                M.select(mailbox, readonly=True)
-                typ, data = M.fetch(msg_id, "(RFC822)")
+
+            # Cheap prefilter: BODYSTRUCTURE is ~1 KB regardless of body
+            # size, so we use it to skip text-only messages before paying
+            # the cost of a full RFC822 fetch.
+            M, typ, data = fetch_or_reconnect(M, provider, mailbox, msg_id, "(BODYSTRUCTURE)")
+            if typ == "OK" and data and data[0]:
+                bs_raw = data[0] if isinstance(data[0], (bytes, bytearray)) else b""
+                if not has_attachment_hint(bs_raw):
+                    seen_msg_ids.add(msg_id.decode())
+                    no_attach += 1
+                    continue
+
+            M, typ, data = fetch_or_reconnect(M, provider, mailbox, msg_id, "(RFC822)")
             if typ != "OK" or not data or not data[0]:
                 print(f"  msg {msg_id!r}: fetch failed ({typ})")
                 continue
@@ -372,14 +404,15 @@ def main() -> int:
                 manifest["message_ids"] = sorted(seen_msg_ids)
                 save_manifest(manifest, manifest_path)
                 print(f"... progress: {i}/{len(ids)} msgs, "
-                      f"{saved} saved, {skipped} duplicates")
+                      f"{saved} saved, {skipped} dup, {no_attach} text-only")
                 time.sleep(0.5)
 
         manifest["hashes"] = sorted(seen_hashes)
         manifest["message_ids"] = sorted(seen_msg_ids)
         save_manifest(manifest, manifest_path)
         print(f"\nDone. Saved {saved} new attachments, "
-              f"skipped {skipped} duplicates.")
+              f"skipped {skipped} duplicates, "
+              f"{no_attach} messages had no attachments.")
         print(f"Files are in: {output_dir}")
         return 0
     finally:

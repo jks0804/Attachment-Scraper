@@ -1,12 +1,12 @@
 # Mail Attachment Scraper
 
-A small Python script that connects to Yahoo Mail or Gmail over IMAP, walks
-every message in a folder, and saves attachments to disk — sorted by media
-type and grouped by the date of the email.
+A small Python script that connects to Yahoo Mail, Gmail, or any IMAP
+server, walks every message in a folder, and saves attachments to disk —
+sorted by media type and grouped by the date of the email.
 
 ```
 attachments/
-└── <provider>/
+└── <provider>/             # yahoo, gmail, or imap-<host>
     └── <category>/         # images, pdfs, documents, archives, video, audio, other
         └── YYYYMMDD/
             └── <filename>
@@ -14,7 +14,8 @@ attachments/
 
 ## Features
 
-- Yahoo and Gmail support out of the box (same script, `--provider` flag).
+- Yahoo, Gmail, and generic IMAP support out of the box (same script,
+  `--provider` flag).
 - Attachments sorted into category folders by file extension.
 - Per-message date folders (`YYYYMMDD`) inside each category.
 - SHA-256 de-duplication — the same image attached to dozens of messages is
@@ -56,20 +57,40 @@ cp .env.example .env
 3. Copy the 16-character password into `GMAIL_APP_PASSWORD` in your `.env`.
    Remove the spaces if Google displays them with spaces.
 
+### Generic IMAP (Fastmail, iCloud, ProtonMail Bridge, self-hosted, …)
+
+Anything that speaks IMAP works. Look up the server's hostname in your
+provider's documentation. Most providers use port 993 over TLS, and many
+require an *app password* / *mail password* rather than your account
+password.
+
+Fill these into your `.env` (or pass `--host` / `--port` on the command
+line):
+
+```
+IMAP_HOST=imap.example.com
+IMAP_PORT=993
+IMAP_EMAIL=you@example.com
+IMAP_PASSWORD=replace-me
+```
+
 ## Usage
 
 ```sh
 python3 scraper.py --provider yahoo
 python3 scraper.py --provider gmail
+python3 scraper.py --provider imap                                # uses IMAP_HOST from env
+python3 scraper.py --provider imap --host imap.fastmail.com       # override on CLI
 ```
 
-By default Yahoo reads from `INBOX` and Gmail reads from
+By default Yahoo and generic IMAP read from `INBOX`, and Gmail reads from
 `[Gmail]/All Mail` (the archive, which includes the inbox). Override with
 `--mailbox`:
 
 ```sh
 python3 scraper.py --provider gmail --mailbox INBOX
 python3 scraper.py --provider yahoo --mailbox "Bulk Mail"
+python3 scraper.py --provider imap --mailbox "Archive"
 ```
 
 The first run on a large mailbox can take a while — the script fetches the
@@ -106,7 +127,10 @@ that would collide on disk get auto-numbered (`name.jpg`, `name_1.jpg`).
 
 - **Outlook / Microsoft 365 is not supported.** Microsoft has deprecated
   IMAP basic-auth across most accounts; supporting Outlook requires an
-  OAuth2 flow and an Azure app registration.
+  OAuth2 flow and an Azure app registration. (Personal `outlook.com`
+  accounts with IMAP still enabled can in theory work via
+  `--provider imap --host outlook.office365.com`, but expect auth errors
+  on most accounts.)
 - **Yahoo and Gmail will throttle** if you blast IMAP. The script pauses
   briefly between batches; if you still see disconnects, increase
   `BATCH_SIZE` or add a longer `time.sleep()`.

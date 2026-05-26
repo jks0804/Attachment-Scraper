@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Mail attachment scraper (Yahoo + Gmail).
+Mail attachment scraper (Yahoo, Gmail, generic IMAP).
 
 Connects to the chosen mail provider over IMAP, walks every message in the
 selected folder, and saves attachments into category subfolders (images,
@@ -30,6 +30,16 @@ Gmail:
   4. python3 scraper.py --provider gmail
      (To grab everything including archived mail, pass
       --mailbox "[Gmail]/All Mail")
+
+Generic IMAP (any other provider — Fastmail, iCloud, self-hosted, etc.):
+  1. Get IMAP host, port, and a password (often an app password).
+  2. Export, or put in .env:
+       export IMAP_HOST="imap.example.com"
+       export IMAP_PORT="993"           # optional, defaults to 993
+       export IMAP_EMAIL="you@example.com"
+       export IMAP_PASSWORD="..."
+  3. python3 scraper.py --provider imap
+     (host/port can also be passed via --host / --port)
 
 Credentials can also live in a .env file next to this script.
 The script keeps a per-provider manifest so re-running only fetches new
@@ -72,6 +82,14 @@ PROVIDERS = {
         # "[Gmail]/All Mail" pulls archived messages too. Override with
         # --mailbox if you only want the inbox.
         "default_mailbox": "[Gmail]/All Mail",
+    },
+    # Generic IMAP. host/port come from --host/--port or IMAP_HOST/IMAP_PORT.
+    "imap": {
+        "host": None,
+        "port": 993,
+        "env_user": "IMAP_EMAIL",
+        "env_pass": "IMAP_PASSWORD",
+        "default_mailbox": "INBOX",
     },
 }
 
@@ -255,11 +273,18 @@ def extract_attachments(msg: Message):
 # ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Scrape attachments from Yahoo or Gmail over IMAP.")
+    p = argparse.ArgumentParser(
+        description="Scrape attachments from Yahoo, Gmail, or any IMAP server."
+    )
     p.add_argument("--provider", choices=sorted(PROVIDERS), default="yahoo",
-                   help="Mail provider to scrape (default: yahoo).")
+                   help="Mail provider to scrape (default: yahoo). Use 'imap' "
+                        "for a generic server and pass --host / --port.")
     p.add_argument("--mailbox", default=None,
                    help="IMAP folder to scan. Defaults to the provider's natural full-archive folder.")
+    p.add_argument("--host", default=None,
+                   help="IMAP host (only for --provider imap). Falls back to $IMAP_HOST.")
+    p.add_argument("--port", type=int, default=None,
+                   help="IMAP port (only for --provider imap). Falls back to $IMAP_PORT, then 993.")
     return p.parse_args()
 
 
@@ -267,8 +292,25 @@ def main() -> int:
     args = parse_args()
     load_env_file(BASE_DIR / ".env")
 
-    provider = PROVIDERS[args.provider]
-    output_dir = OUTPUT_ROOT / args.provider
+    provider = dict(PROVIDERS[args.provider])
+    if args.provider == "imap":
+        provider["host"] = args.host or os.environ.get("IMAP_HOST")
+        if not provider["host"]:
+            sys.exit("Generic IMAP requires --host or IMAP_HOST in your .env.")
+        port_env = os.environ.get("IMAP_PORT")
+        if args.port is not None:
+            provider["port"] = args.port
+        elif port_env:
+            provider["port"] = int(port_env)
+        # Bucket output by host so multiple IMAP servers don't collide.
+        folder_name = "imap-" + re.sub(r"[^a-zA-Z0-9._-]", "_", provider["host"])
+    else:
+        if args.host or args.port is not None:
+            print("warning: --host/--port are ignored unless --provider is 'imap'",
+                  file=sys.stderr)
+        folder_name = args.provider
+
+    output_dir = OUTPUT_ROOT / folder_name
     manifest_path = output_dir / "downloaded.json"
     output_dir.mkdir(parents=True, exist_ok=True)
 
